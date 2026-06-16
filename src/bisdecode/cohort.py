@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""
+cohort_summary.py — Build a one-row-per-case cohort table from decoded BIS trends.
+
+Reads every `*_trend.csv` produced by decode_bis.py and computes case-level
+depth-of-anaesthesia metrics: recording/monitored time, BIS distribution, time
+in/below/above the 40-60 target band, suppression burden, EMG, and signal
+quality. Each trend row is 1 second, so counts convert directly to minutes.
+
+Usage:
+    python3 cohort_summary.py decoded -o decoded/cohort_summary.csv [--channel Ch1]
+"""
+import argparse
+import glob
+import os
+
+import numpy as np
+import pandas as pd
+
+TARGET_LO, TARGET_HI = 40, 60          # usual general-anaesthesia BIS target band
+SQI_RELIABLE = 50                       # SQI >= 50 considered reliable
+
+
+def pct(n, d):
+    return round(100.0 * n / d, 1) if d else np.nan
+
+
+def summarize(path, channel):
+    df = pd.read_csv(path, parse_dates=["timestamp"])
+    base = os.path.basename(path).replace("_trend.csv", "")
+
+    def col(param):
+        c = f"{channel}:{param}"
+        return df[c] if c in df.columns else pd.Series(dtype=float)
+
+    bis, sr, emg, sqi = col("DB13U01"), col("SR12"), col("EMGLOW01"), col("SQI10")
+
+    rec_s = len(df)                                  # total rows = total seconds
+    valid = bis.notna()                              # sensor connected / BIS present
+    mon_s = int(valid.sum())                         # monitored seconds
+    b = bis[valid]
+
+    row = {
+        "case": base,
+        "start": df["timestamp"].min(),
+        "end": df["timestamp"].max(),
+        "rec_min": round(rec_s / 60, 1),
+        "monitored_min": round(mon_s / 60, 1),
+        "bis_median": round(b.median(), 1) if mon_s else np.nan,
+        "bis_iqr_lo": round(b.quantile(.25), 1) if mon_s else np.nan,
+        "bis_iqr_hi": round(b.quantile(.75), 1) if mon_s else np.nan,
+        "bis_min": round(b.min(), 1) if mon_s else np.nan,
+        "bis_max": round(b.max(), 1) if mon_s else np.nan,
+        # --- BIS variability (lability has been linked to delirium) ---
+        "bis_sd": round(b.std(), 1) if mon_s else np.nan,
+        "bis_cv": round(b.std() / b.mean(), 3) if mon_s and b.mean() else np.nan,
+        # --- time relative to the 40-60 target band (% of monitored time) ---
+        "pct_in_40_60": pct(((b >= TARGET_LO) & (b <= TARGET_HI)).sum(), mon_s),
+        "pct_above_60": pct((b > TARGET_HI).sum(), mon_s),
+        # --- deep-hypnosis exposure (the headline delirium/POCD exposure vars) ---
+        "pct_below_40": pct((b < TARGET_LO).sum(), mon_s),
+        "min_below_40": round((b < TARGET_LO).sum() / 60, 1),
+        "pct_below_30": pct((b < 30).sum(), mon_s),
+        "min_below_30": round((b < 30).sum() / 60, 1),
+        "min_in_40_60": round(((b >= TARGET_LO) & (b <= TARGET_HI)).sum() / 60, 1),
+        # --- suppression burden ---
+        "sr_mean": round(sr[valid].mean(), 2) if mon_s else np.nan,
+        "pct_suppressed_sr_gt0": pct((sr[valid] > 0).sum(), mon_s),
+        "min_suppressed_sr_gt0": round((sr[valid] > 0).sum() / 60, 1),
+        "pct_deep_burst_sr_ge10": pct((sr[valid] >= 10).sum(), mon_s),
+        # time-integrated suppression: equivalent minutes of full (100%) suppression
+        # = AUC of SR(t) over the case. The strongest single EEG delirium predictor.
+        "supp_min_equiv": round(sr[valid].clip(lower=0).sum() / 100 / 60, 2) if mon_s else np.nan,
+        # EMG + signal quality
+        "emg_median": round(emg[valid].median(), 1) if mon_s else np.nan,
+        "sqi_median": round(sqi[valid].median(), 1) if mon_s else np.nan,
+        "pct_low_sqi_lt50": pct((sqi < SQI_RELIABLE).sum(), rec_s),
+    }
+    return row
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="bisdecode cohort", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("decoded_dir", help="directory containing <base>/<base>_trend.csv")
+    ap.add_argument("-o", "--out", default="cohort_summary.csv")
+    ap.add_argument("--channel", default="Ch1", help="trend channel (default Ch1)")
+    args = ap.parse_args(argv)
+
+    trends = sorted(glob.glob(os.path.join(args.decoded_dir, "*", "*_trend.csv")))
+    if not trends:
+        raise SystemExit(f"no *_trend.csv found under {args.decoded_dir}")
+
+    rows = []
+    for t in trends:
+        try:
+            rows.append(summarize(t, args.channel))
+        except Exception as e:
+            print(f"[FAIL] {t}: {e}")
+    coh = pd.DataFrame(rows).sort_values("case").reset_index(drop=True)
+    coh.to_csv(args.out, index=False)
+
+    # console: cohort-level overview
+    print(f"{len(coh)} cases -> {args.out}\n")
+    pd.set_option("display.width", 200, "display.max_columns", 30)
+    print(coh[["case", "monitored_min", "bis_median", "pct_in_40_60",
+               "pct_below_40", "pct_suppressed_sr_gt0", "sqi_median",
+               "pct_low_sqi_lt50"]].to_string(index=False))
+    print("\n=== cohort distribution (median [IQR]) ===")
+    for c in ["monitored_min", "bis_median", "bis_sd", "pct_in_40_60",
+              "pct_below_40", "min_below_40", "pct_below_30", "min_below_30",
+              "supp_min_equiv", "pct_suppressed_sr_gt0", "emg_median",
+              "sqi_median", "pct_low_sqi_lt50"]:
+        s = coh[c].dropna()
+        print(f"  {c:24s} {s.median():7.1f}  [{s.quantile(.25):.1f} - {s.quantile(.75):.1f}]")
+
+
+if __name__ == "__main__":
+    main()
