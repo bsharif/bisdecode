@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bisdecode"
-version = "0.1.0"
+version = "0.1.1"
 description = "Decode Aspect/Covidien/Medtronic BIS Advance/Vista data-download files (processed trend, spectrogram, raw EEG) to tidy CSV/NumPy."
 readme = "README.md"
 license = { text = "MIT" }

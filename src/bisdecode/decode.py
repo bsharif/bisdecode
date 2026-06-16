@@ -320,10 +320,14 @@ def decode_case(path, outdir, do_eeg=True, anon=False, key=None, rng=None,
             return df
         if col in df.columns:
             df[col] = df[col] + shift
-        # also rewrite timestamps embedded INSIDE string fields (e.g. the
-        # IMPEDNCE messages: "IMPEDNCE|05/22/2026 08:10:15|g NOISE")
+        # also rewrite timestamps embedded INSIDE text fields (e.g. the
+        # IMPEDNCE messages: "IMPEDNCE|05/22/2026 08:10:15|g NOISE").
+        # Match object AND string dtypes — pandas >=3 stores strings as a
+        # dedicated dtype, not object, so an `== object` check would miss them
+        # and silently leak the embedded date.
         for c in df.columns:
-            if c != col and df[c].dtype == object:
+            if c != col and (df[c].dtype == object or
+                             str(df[c].dtype) in ("string", "str")):
                 df[c] = df[c].map(lambda v: shift_embedded(v, shift))
         return df
 

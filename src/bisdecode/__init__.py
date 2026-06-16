@@ -15,7 +15,7 @@ from .decode import (
 )
 from .cohort import summarize
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = [
     "decode_case", "parse_spa", "parse_spectra", "parse_eeg", "parse_events",
     "parse_messages", "parse_offset", "summarize", "EEG_SAMPLE_RATE", "SENTINELS",
