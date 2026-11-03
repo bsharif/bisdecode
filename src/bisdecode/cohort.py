@@ -13,6 +13,7 @@ Usage:
 import argparse
 import glob
 import os
+import sys
 
 import numpy as np
 import pandas as pd
@@ -31,7 +32,8 @@ def summarize(path, channel):
 
     def col(param):
         c = f"{channel}:{param}"
-        return df[c] if c in df.columns else pd.Series(dtype=float)
+        # a missing parameter is all-NaN (not an empty Series that breaks masks)
+        return df[c] if c in df.columns else pd.Series(np.nan, index=df.index)
 
     bis, sr, emg, sqi = col("DB13U01"), col("SR12"), col("EMGLOW01"), col("SQI10")
 
@@ -39,6 +41,10 @@ def summarize(path, channel):
     valid = bis.notna()                              # sensor connected / BIS present
     mon_s = int(valid.sum())                         # monitored seconds
     b = bis[valid]
+    sr_ok = valid & sr.notna()                       # SR measured while monitored
+    sr_s = int(sr_ok.sum())
+    s = sr[sr_ok]
+    sqi_s = int(sqi.notna().sum())                   # seconds with an SQI reading
 
     row = {
         "case": base,
@@ -64,17 +70,19 @@ def summarize(path, channel):
         "min_below_30": round((b < 30).sum() / 60, 1),
         "min_in_40_60": round(((b >= TARGET_LO) & (b <= TARGET_HI)).sum() / 60, 1),
         # --- suppression burden ---
-        "sr_mean": round(sr[valid].mean(), 2) if mon_s else np.nan,
-        "pct_suppressed_sr_gt0": pct((sr[valid] > 0).sum(), mon_s),
-        "min_suppressed_sr_gt0": round((sr[valid] > 0).sum() / 60, 1),
-        "pct_deep_burst_sr_ge10": pct((sr[valid] >= 10).sum(), mon_s),
+        # (NaN, not 0, when SR was never measured)
+        "sr_mean": round(s.mean(), 2) if sr_s else np.nan,
+        "pct_suppressed_sr_gt0": pct((s > 0).sum(), sr_s),
+        "min_suppressed_sr_gt0": round((s > 0).sum() / 60, 1) if sr_s else np.nan,
+        "pct_deep_burst_sr_ge10": pct((s >= 10).sum(), sr_s),
         # time-integrated suppression: equivalent minutes of full (100%) suppression
         # = AUC of SR(t) over the case. The strongest single EEG delirium predictor.
-        "supp_min_equiv": round(sr[valid].clip(lower=0).sum() / 100 / 60, 2) if mon_s else np.nan,
+        "supp_min_equiv": round(s.clip(lower=0).sum() / 100 / 60, 2) if sr_s else np.nan,
         # EMG + signal quality
         "emg_median": round(emg[valid].median(), 1) if mon_s else np.nan,
         "sqi_median": round(sqi[valid].median(), 1) if mon_s else np.nan,
-        "pct_low_sqi_lt50": pct((sqi < SQI_RELIABLE).sum(), rec_s),
+        # % of seconds WITH an SQI reading (sensor-off seconds are not "good")
+        "pct_low_sqi_lt50": pct((sqi < SQI_RELIABLE).sum(), sqi_s),
     }
     return row
 
@@ -91,12 +99,15 @@ def main(argv=None):
     if not trends:
         raise SystemExit(f"no *_trend.csv found under {args.decoded_dir}")
 
-    rows = []
+    rows, failed = [], 0
     for t in trends:
         try:
             rows.append(summarize(t, args.channel))
         except Exception as e:
-            print(f"[FAIL] {t}: {e}")
+            failed += 1
+            print(f"[FAIL] {t}: {e}", file=sys.stderr)
+    if not rows:
+        raise SystemExit("no case could be summarised")
     coh = pd.DataFrame(rows).sort_values("case").reset_index(drop=True)
     coh.to_csv(args.out, index=False)
 
@@ -113,7 +124,8 @@ def main(argv=None):
               "sqi_median", "pct_low_sqi_lt50"]:
         s = coh[c].dropna()
         print(f"  {c:24s} {s.median():7.1f}  [{s.quantile(.25):.1f} - {s.quantile(.75):.1f}]")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

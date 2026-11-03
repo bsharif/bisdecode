@@ -15,15 +15,19 @@ START = "01/02/2030 08:00:00"
 # .spa per-channel parameter names (one channel: Ch 1)
 PARAMS = ["PIC_ID", "SR12", "SEF08", "MEDFRQ08", "BISBIT00", "DB13U01",
           "DB11U04", "B34U05", "TOTPOW08", "EMGLOW01", "SQI10", "IMPEDNCE",
-          "ARTF2", "BURST", "ST"]
+          "ARTF2", "BURST", "ST", "C1POSIMP"]
 GLOBALS = ["SpSmooth", "BiSmooth", "LoFilter", "NotFiltr", "HiFilter"]
 
 # four per-second rows; (BIS, SR, SQI, EMG) — last row is the NaN sentinel
 ROWS = [
-    {"BIS": "45.0", "SR12": "0.0", "SQI10": "95.0", "EMGLOW01": "30.0"},
-    {"BIS": "38.0", "SR12": "0.0", "SQI10": "96.0", "EMGLOW01": "28.0"},
-    {"BIS": "30.0", "SR12": "12.0", "SQI10": "90.0", "EMGLOW01": "25.0"},
-    {"BIS": "-3276.0", "SR12": "-3276.8", "SQI10": "-327.7", "EMGLOW01": "-3276.0"},
+    {"BIS": "45.0", "SR12": "0.0", "SQI10": "95.0", "EMGLOW01": "30.0",
+     "ARTF2": "00000080", "BISBIT00": "0110", "IMP": ""},
+    {"BIS": "38.0", "SR12": "0.0", "SQI10": "96.0", "EMGLOW01": "28.0",
+     "ARTF2": "00000000", "BISBIT00": "000e", "IMP": ""},
+    {"BIS": "30.0", "SR12": "12.0", "SQI10": "90.0", "EMGLOW01": "25.0",
+     "ARTF2": "000000a9", "BISBIT00": "0110", "IMP": "1200"},
+    {"BIS": "-3276.0", "SR12": "-3276.8", "SQI10": "-327.7", "EMGLOW01": "-3276.0",
+     "ARTF2": "00000000", "BISBIT00": "0110", "IMP": ""},
 ]
 
 
@@ -36,14 +40,15 @@ def _times(n):
 
 
 def _spa(path):
-    name_row = ["Time"] + GLOBALS + PARAMS
-    ch_row = ["S_HDR3"] + [""] * len(GLOBALS) + ["Ch 1"] + [""] * (len(PARAMS) - 1)
+    # real files end every line with '|' (an empty trailing field)
+    name_row = ["Time"] + GLOBALS + PARAMS + [""]
+    ch_row = ["S_HDR3"] + [""] * len(GLOBALS) + ["Ch 1"] + [""] * len(PARAMS)
     lines = ["|".join(ch_row), "|".join(name_row)]
     for t, r in zip(_times(len(ROWS)), ROWS):
         vals = [t] + ["3", "0", "3", "3", "2"]            # Time + globals
-        vals += ["27", r["SR12"], "14.0", "4.0", "0110", r["BIS"],
+        vals += ["27", r["SR12"], "14.0", "4.0", r["BISBIT00"], r["BIS"],
                  "-3276.0", "-3276.0", "60.0", r["EMGLOW01"], r["SQI10"],
-                 "11.0", "00000080", "-3276", "7.0"]
+                 "11.0", r["ARTF2"], "-3276", "7.0", r["IMP"], ""]
         lines.append("|".join(vals))
     _write(path, lines)
 
@@ -52,7 +57,7 @@ def _fa(path):
     lines = ["S_HDR3|BIS R2", "Time|Spectra"]
     for t in _times(len(ROWS)):
         bins = ",".join(str(1000 + i) for i in range(60))
-        lines.append(f"{t}|{bins}")
+        lines.append(f"{t}|{bins}|")                 # trailing '|' as in real files
     _write(path, lines)
 
 
@@ -65,6 +70,7 @@ def _ma(path):
     _write(path, [
         f"{START} > Case ID: SYNTH",
         f"{START} > BISx serial number: TEST123",
+        f"{START} > Sensor expiry: 01/02/2030",          # bare date, no clock time
         # embedded timestamp inside the message body (anonymiser must shift it):
         f"01/02/2030 08:00:02 > IMPEDNCE|01/02/2030 08:00:02|g   7000",
     ])

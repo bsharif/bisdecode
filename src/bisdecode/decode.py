@@ -22,6 +22,8 @@ Verified field map in .spa (per channel block), cross-checked against the BIS PD
     TOTPOW08 = Total Power (dB)             EMGLOW01= EMG (dB)
     SQI10    = Signal Quality Index (%)     IMPEDNCE= impedance
     ARTF2    = artifact bitmask (hex)       BURST   = burst count    ST = ?
+    BISBIT00 = BIS status bitfield (hex)
+Hex bitfields (ARTF2, BISBIT00) are decoded to their integer value (0x80 -> 128).
 
 Sentinel "no data" values (~ -3276.8, -3276.0, -327.7, -3276) are mapped to NaN.
 
@@ -57,7 +59,11 @@ import numpy as np
 import pandas as pd
 
 # Sentinel values used by the monitor to mean "no valid measurement".
-SENTINELS = {-3276.8, -3276.0, -327.7, -3276.0, 3276.8}
+SENTINELS = {-3276.8, -3276.0, -327.7, 3276.8}
+HEX_PARAMS = {"ARTF2", "BISBIT00"}   # hex bitfields in .spa -> decoded to int
+SPECTRA_BINS = 60
+# device serial numbers identify the site: redacted in anonymised output
+_SERIAL_RE = re.compile(r"(serial number\s*:\s*)\S.*$", re.IGNORECASE)
 EEG_SAMPLE_RATE = 128          # Hz, per channel (BIS R2 raw EEG)
 EEG_BYTES_PER_SEC = 512        # observed: 2 ch * 128 Hz * 2 bytes
 
@@ -72,7 +78,7 @@ def derive_case_id(dh, msgs_df):
                 return cid
     for cand in (os.path.basename(os.path.dirname(dh)), os.path.basename(dh)):
         parts = cand.split("-")
-        if len(parts) >= 2 and parts[0] == "M":
+        if len(parts) >= 2 and parts[0] == "M" and not parts[1].isdigit():
             return parts[1]
     return None
 
@@ -90,24 +96,37 @@ def load_key(path):
 
 
 def save_key(path, key):
-    with open(path, "w", newline="") as f:
+    """Write the key atomically: a crash mid-write must not corrupt the secret."""
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["source_base", "case_id", "anon_name", "offset_seconds"])
         for base, v in sorted(key.items()):
             w.writerow([base, v["case_id"], v["anon_name"], v["offset_seconds"]])
+    os.replace(tmp, path)
 
 
-_EMBED_TS_RE = re.compile(r"\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2}")
+_EMBED_TS_RE = re.compile(r"\d{2}/\d{2}/\d{4}(?: \d{2}:\d{2}:\d{2})?")
 
 
 def shift_embedded(value, shift):
-    """Rewrite any 'MM/DD/YYYY HH:MM:SS' substrings inside a string by `shift`."""
+    """Rewrite 'MM/DD/YYYY[ HH:MM:SS]' substrings inside a string by `shift`.
+
+    A bare date (no clock time) is shifted as midnight and written back as a date.
+    """
     if not isinstance(value, str):
         return value
     def repl(m):
-        ts = pd.to_datetime(m.group(0), format="%m/%d/%Y %H:%M:%S", errors="coerce")
-        return m.group(0) if pd.isna(ts) else (ts + shift).strftime("%m/%d/%Y %H:%M:%S")
+        txt = m.group(0)
+        fmt = "%m/%d/%Y %H:%M:%S" if " " in txt else "%m/%d/%Y"
+        ts = pd.to_datetime(txt, format=fmt, errors="coerce")
+        return txt if pd.isna(ts) else (ts + shift).strftime(fmt)
     return _EMBED_TS_RE.sub(repl, value)
+
+
+def redact_serials(value):
+    """'BISx serial number: ABC123' -> 'BISx serial number: [redacted]'."""
+    return _SERIAL_RE.sub(r"\1[redacted]", value) if isinstance(value, str) else value
 
 
 def assign_shift(key, base, case_id, rng, shift_days, used_names, shift_min_days=180):
@@ -120,7 +139,8 @@ def assign_shift(key, base, case_id, rng, shift_days, used_names, shift_min_days
     if base in key:
         used_names.add(key[base]["anon_name"])
         return key[base]["anon_name"], key[base]["offset_seconds"]
-    name = case_id or base
+    # no Case ID: an opaque pseudonym, never the date-encoded base (L<MMDDhhmm>)
+    name = case_id or f"case{rng.randrange(16**6):06x}"
     n, stem = name, name
     while name in used_names:                       # de-collide pseudonyms
         n = (n if isinstance(n, int) else 1) + 1
@@ -129,7 +149,7 @@ def assign_shift(key, base, case_id, rng, shift_days, used_names, shift_min_days
     lo = min(shift_min_days, shift_days)
     mag = rng.randint(lo, shift_days) * 86400 + rng.randint(0, 86399)
     offset = mag if rng.random() < 0.5 else -mag
-    key[base] = {"case_id": case_id or base, "anon_name": name, "offset_seconds": offset}
+    key[base] = {"case_id": case_id or "", "anon_name": name, "offset_seconds": offset}
     return name, offset
 
 
@@ -149,6 +169,16 @@ def locate_dh(path):
     if dh and glob.glob(os.path.join(dh[0], "*.spa")):
         return dh[0]
     raise FileNotFoundError(f"could not find a DH/*.spa folder under {path}")
+
+
+def _hex_to_int(s):
+    """Decode a hex-bitfield column ('00000080' -> 128); blank/invalid -> <NA>."""
+    def conv(v):
+        try:
+            return int(v, 16) if v else None
+        except ValueError:
+            return None
+    return pd.array([conv(v) for v in s], dtype="Int64")
 
 
 def _nan_sentinels(s):
@@ -181,19 +211,27 @@ def parse_spa(path):
         else:
             cols.append(nm or f"col{i}")
 
-    rows = [ln.split("|") for ln in lines[2:] if ln.strip()]
-    df = pd.DataFrame(rows, columns=cols[: len(rows[0])])
+    rows = [ln.split("|")[: len(cols)] for ln in lines[2:] if ln.strip()]
+    df = pd.DataFrame(rows, columns=cols).fillna("")
     df["timestamp"] = pd.to_datetime(df["timestamp"], format="%m/%d/%Y %H:%M:%S",
                                      errors="coerce")
-    for c in df.columns:
+    for c in list(df.columns):
         if c == "timestamp":
             continue
-        num = pd.to_numeric(df[c].str.strip(), errors="coerce")
-        # keep hex bitmask columns (ARTF2, BISBIT00) as raw strings if not numeric
-        if num.notna().mean() > 0.5:
-            df[c] = _nan_sentinels(num)
+        txt = df[c].astype(str).str.strip()
+        blank = txt == ""
+        if c.startswith("col") and blank.all():
+            df = df.drop(columns=c)              # empty field after a trailing '|'
+            continue
+        if c.split(":")[-1] in HEX_PARAMS:       # hex bitfields: '00000080' -> 128
+            df[c] = _hex_to_int(txt)
+            continue
+        num = pd.to_numeric(txt, errors="coerce")
+        # numeric if every non-blank cell parses (mostly-blank impedance columns too)
+        if num[~blank].notna().all():
+            df[c] = _nan_sentinels(num.astype(float))
         else:
-            df[c] = df[c].str.strip()
+            df[c] = txt
     return df
 
 
@@ -205,10 +243,13 @@ def parse_spectra(path):
     for ln in lines[2:]:
         if not ln.strip() or "|" not in ln:
             continue
-        ts, vals = ln.split("|", 1)
-        bins = [v for v in vals.split(",") if v != ""]
-        data.append([ts] + bins)
-    n_bins = max(len(r) - 1 for r in data)
+        # row is 'ts|b0,...,b59|' — the trailing '|' must not glue onto the last bin
+        fields = ln.split("|")
+        bins = fields[1].split(",")
+        if bins[-1].strip() == "":
+            bins = bins[:-1]                     # drop a trailing comma only
+        data.append([fields[0]] + bins)
+    n_bins = max([len(r) - 1 for r in data] + [SPECTRA_BINS])
     cols = ["timestamp"] + [f"bin{i:02d}" for i in range(n_bins)]
     df = pd.DataFrame([r + [None] * (n_bins + 1 - len(r)) for r in data], columns=cols)
     df["timestamp"] = pd.to_datetime(df["timestamp"], format="%m/%d/%Y %H:%M:%S",
@@ -300,6 +341,10 @@ def decode_case(path, outdir, do_eeg=True, anon=False, key=None, rng=None,
     msgs = parse_messages(p("m_a"))
 
     if anon:
+        key = {} if key is None else key
+        if used_names is None:
+            used_names = {v["anon_name"] for v in key.values()}
+        rng = rng or random.SystemRandom()
         case_id = derive_case_id(dh, msgs)
         name, offset_s = assign_shift(key, base, case_id, rng, shift_days,
                                       used_names, shift_min_days)
@@ -347,14 +392,17 @@ def decode_case(path, outdir, do_eeg=True, anon=False, key=None, rng=None,
 
     # events + messages
     shifted(parse_events(p("e_a"))).to_csv(op("events.csv"), index=False)
-    shifted(msgs).to_csv(op("messages.csv"), index=False)
+    msgs = shifted(msgs)
+    if anon:
+        msgs["message"] = msgs["message"].map(redact_serials)
+    msgs.to_csv(op("messages.csv"), index=False)
     meta["revisions"] = parse_revisions(msgs)
 
-    # raw EEG (no absolute time inside; offset index timestamps shifted/dropped)
+    # raw EEG (no absolute time inside); shift the segment times to keep alignment
     oidx = parse_offset(p("o_a"))
     if anon:
         for r in oidx:
-            r.pop("timestamp", None)                    # byte offsets only
+            r["timestamp"] = shift_embedded(r["timestamp"], shift)
     meta["eeg"] = {"sample_rate_hz": EEG_SAMPLE_RATE, "n_channels": 2,
                    "dtype": "int16_le", "offset_index": oidx}
     if do_eeg and os.path.exists(p("r2a")):
@@ -405,13 +453,15 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=None,
                     help="seed offsets for reproducible runs (default: system entropy)")
     args = ap.parse_args(argv)
+    if args.anonymise and args.shift_days < args.shift_min_days:
+        ap.error("--shift-days must be >= --shift-min-days")
 
     key, rng, used = None, None, None
     if args.anonymise:
         key = load_key(args.key_file)
         used = {v["anon_name"] for v in key.values()}
         rng = random.Random(args.seed) if args.seed is not None else random.SystemRandom()
-        if args.outdir == "decoded":            # avoid clobbering the identifiable copy
+        if os.path.normpath(args.outdir) == "decoded":   # don't clobber the identifiable copy
             args.outdir = "decoded_anon"
         print(f"ANONYMISE: date-shifting per case; key -> {args.key_file} "
               f"(KEEP SECRET); output -> {args.outdir}/")
@@ -434,11 +484,12 @@ def main(argv=None):
             except Exception as e:
                 print(f"[FAIL] {os.path.basename(c)}: {e}", file=sys.stderr)
         print(f"done: {ok}/{len(cases)} cases decoded into {args.outdir}/")
-    else:
-        decode_case(args.path, args.outdir, **kw)
-        if args.anonymise:
-            save_key(args.key_file, key)
+        return 0 if cases and ok == len(cases) else 1
+    decode_case(args.path, args.outdir, **kw)
+    if args.anonymise:
+        save_key(args.key_file, key)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
