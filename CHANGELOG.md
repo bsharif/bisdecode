@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3
+- **Cohort `--min-sqi N`** (and `summarize(..., min_sqi=N)`): use only seconds
+  with SQI ≥ N for all BIS, SR and EMG metrics; seconds with no SQI reading are
+  excluded too. New columns `min_sqi` and `excluded_low_sqi_min`. Off by default,
+  so existing results do not change. `pct_low_sqi_lt50` ignores the filter.
+
 ## 0.1.2
 Fixes from a full-code review, checked against 100 real cases.
 

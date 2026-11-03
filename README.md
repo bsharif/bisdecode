@@ -30,6 +30,9 @@ bisdecode decode raw-data --all --anonymise -o decoded_anon --key-file KEY.csv
 
 # one-row-per-case cohort summary from decoded trends
 bisdecode cohort decoded -o cohort_summary.csv
+
+# same, but BIS/SR/EMG metrics use only seconds with SQI >= 50
+bisdecode cohort decoded -o cohort_summary.csv --min-sqi 50
 ```
 
 Per case you get: `*_trend.csv` (per-second BIS / SR / SEF / median freq / total

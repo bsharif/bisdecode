@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 import bisdecode
+import bisdecode.cli
 from bisdecode.cohort import summarize
 from bisdecode.decode import decode_case, main as decode_main, parse_spa, parse_spectra
 
@@ -167,3 +168,41 @@ def test_cohort_low_sqi_uses_seconds_with_sqi(tmp_path):
                            SR12=[nan, nan, 0.0, 0.0],
                            SQI10=[nan, nan, 30.0, 90.0]), "Ch1")
     assert row["pct_low_sqi_lt50"] == 50.0           # 1 of 2 SQI seconds, not 1 of 4
+
+
+def test_cohort_min_sqi_off_by_default(tmp_path):
+    row = summarize(_trend(tmp_path, DB13U01=[45.0, 20.0], SR12=[0.0, 50.0],
+                           SQI10=[90.0, 30.0]), "Ch1")
+    assert row["monitored_min"] == round(2 / 60, 1)
+    assert pd.isna(row["min_sqi"]) and pd.isna(row["excluded_low_sqi_min"])
+
+
+def test_cohort_min_sqi_filters_unreliable_seconds(tmp_path):
+    nan = float("nan")
+    # 120 reliable seconds at BIS 45, 60 low-SQI seconds at BIS 20 with
+    # suppression, 60 seconds with BIS but no SQI reading
+    bis = [45.0] * 120 + [20.0] * 60 + [45.0] * 60
+    sr = [0.0] * 120 + [50.0] * 60 + [0.0] * 60
+    sqi = [90.0] * 120 + [30.0] * 60 + [nan] * 60
+    f = _trend(tmp_path, DB13U01=bis, SR12=sr, SQI10=sqi)
+
+    raw = summarize(f, "Ch1")
+    assert raw["min_below_40"] == 1.0 and raw["supp_min_equiv"] == 0.5
+
+    row = summarize(f, "Ch1", min_sqi=50)
+    assert row["min_sqi"] == 50
+    assert row["monitored_min"] == 2.0               # only the 120 reliable seconds
+    assert row["excluded_low_sqi_min"] == 2.0        # 60 low + 60 without SQI
+    assert row["bis_median"] == 45.0
+    assert row["min_below_40"] == 0.0
+    assert row["supp_min_equiv"] == 0.0
+    assert row["pct_low_sqi_lt50"] == 33.3           # quality flag ignores the filter
+
+
+def test_cli_cohort_min_sqi(synth_case, tmp_path):
+    out = str(tmp_path / "decoded")
+    decode_case(synth_case, out)
+    summary = str(tmp_path / "c.csv")
+    assert bisdecode.cli.main(["cohort", out, "-o", summary, "--min-sqi", "50"]) == 0
+    c = pd.read_csv(summary)
+    assert c.loc[0, "min_sqi"] == 50 and c.loc[0, "bis_median"] == 38.0

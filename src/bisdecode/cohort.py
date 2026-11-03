@@ -7,8 +7,14 @@ depth-of-anaesthesia metrics: recording/monitored time, BIS distribution, time
 in/below/above the 40-60 target band, suppression burden, EMG, and signal
 quality. Each trend row is 1 second, so counts convert directly to minutes.
 
+With --min-sqi N, a second counts only if its SQI >= N (seconds with no SQI are
+excluded too). Every BIS, SR and EMG metric then uses only those seconds;
+`monitored_min` becomes "monitored with reliable signal", and the removed time
+is reported as `excluded_low_sqi_min`. Off by default.
+
 Usage:
     python3 cohort_summary.py decoded -o decoded/cohort_summary.csv [--channel Ch1]
+        [--min-sqi 50]
 """
 import argparse
 import glob
@@ -26,7 +32,7 @@ def pct(n, d):
     return round(100.0 * n / d, 1) if d else np.nan
 
 
-def summarize(path, channel):
+def summarize(path, channel, min_sqi=None):
     df = pd.read_csv(path, parse_dates=["timestamp"])
     base = os.path.basename(path).replace("_trend.csv", "")
 
@@ -39,6 +45,11 @@ def summarize(path, channel):
 
     rec_s = len(df)                                  # total rows = total seconds
     valid = bis.notna()                              # sensor connected / BIS present
+    excluded = pd.Series(False, index=df.index)
+    if min_sqi is not None:                          # drop unreliable-signal seconds
+        reliable = sqi >= min_sqi                    # NaN SQI -> False (excluded)
+        excluded = valid & ~reliable
+        valid = valid & reliable
     mon_s = int(valid.sum())                         # monitored seconds
     b = bis[valid]
     sr_ok = valid & sr.notna()                       # SR measured while monitored
@@ -52,6 +63,8 @@ def summarize(path, channel):
         "end": df["timestamp"].max(),
         "rec_min": round(rec_s / 60, 1),
         "monitored_min": round(mon_s / 60, 1),
+        "min_sqi": np.nan if min_sqi is None else min_sqi,
+        "excluded_low_sqi_min": round(int(excluded.sum()) / 60, 1) if min_sqi is not None else np.nan,
         "bis_median": round(b.median(), 1) if mon_s else np.nan,
         "bis_iqr_lo": round(b.quantile(.25), 1) if mon_s else np.nan,
         "bis_iqr_hi": round(b.quantile(.75), 1) if mon_s else np.nan,
@@ -93,6 +106,9 @@ def main(argv=None):
     ap.add_argument("decoded_dir", help="directory containing <base>/<base>_trend.csv")
     ap.add_argument("-o", "--out", default="cohort_summary.csv")
     ap.add_argument("--channel", default="Ch1", help="trend channel (default Ch1)")
+    ap.add_argument("--min-sqi", type=float, default=None, metavar="N",
+                    help="use only seconds with SQI >= N for BIS/SR/EMG metrics "
+                         "(e.g. 50); default: no SQI filter")
     args = ap.parse_args(argv)
 
     trends = sorted(glob.glob(os.path.join(args.decoded_dir, "*", "*_trend.csv")))
@@ -102,7 +118,7 @@ def main(argv=None):
     rows, failed = [], 0
     for t in trends:
         try:
-            rows.append(summarize(t, args.channel))
+            rows.append(summarize(t, args.channel, args.min_sqi))
         except Exception as e:
             failed += 1
             print(f"[FAIL] {t}: {e}", file=sys.stderr)
