@@ -23,3 +23,13 @@ Known differences (cannot occur in a BIS export): the ports accept only ASCII
 digits where Python's `\d` also takes other Unicode digits; hex values above
 2^53 lose precision; empty pandas tables are `object` dtype, so the parity test
 compares only column names when a table has no rows.
+
+## Cohort summary (`ts/src/cohort.ts` ← `cohort.summarize`)
+
+| Topic | Rule |
+|---|---|
+| Rounding | Values that are numpy floats in Python (medians, quantiles, SD, means, `pct`, counts / 60) use numpy's `rint(x·10ⁿ)/10ⁿ`, ties to even. Values that are Python floats (`rec_min`, `monitored_min`, `excluded_low_sqi_min`) use Python's exact-decimal `round` |
+| Sums | numpy pairwise summation (blocks of 8, split above 128), as pandas `sum`, `mean` and `std` use it |
+| Quantiles | numpy "linear" with numpy's two-sided lerp |
+| Input | Python summarises the trend CSV; read back, an all-number text column becomes float, so the port does the same |
+| Missing | NaN results are `null` |

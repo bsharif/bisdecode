@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as tsImpl from "../src/bisdecode.ts";
 import type { Table } from "../src/bisdecode.ts";
+import { summarize } from "../src/cohort.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, "..", "..");
@@ -75,6 +76,15 @@ for (const name of goldens) {
   const g = JSON.parse(readFileSync(join(work, name), "utf8"));
   const label = g.dir.slice(work.length + 1).split("/")[0];
   const file = (ext: string) => readFileSync(join(g.dir, `${g.base}.${ext}`));
+
+  test(`cohort: ${label}`, () => {
+    const spa = tsImpl.parseSpa(file("spa"));
+    for (const c of g.cohort) {
+      const got = Object.fromEntries(Object.entries(summarize(spa, g.base, c.channel, c.minSqi))
+        .map(([k, v]) => [k, typeof v === "number" ? enc(v) : v]));
+      assert.deepEqual(got, c.row, `${c.channel} minSqi=${c.minSqi}`);
+    }
+  });
 
   for (const [implName, impl] of impls) {
     test(`${implName}: ${label}`, () => {

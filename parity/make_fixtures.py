@@ -21,6 +21,7 @@ import pandas as pd
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "src"))
 from bisdecode import decode as D  # noqa: E402
+from bisdecode.cohort import summarize  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
     "bis_conftest", os.path.join(HERE, "..", "tests", "conftest.py"))
@@ -76,10 +77,28 @@ def offset_table(rows):
     ]}
 
 
+def cohort_rows(spa_df, base, tmp):
+    """summarize() exactly as the CLI runs it: on the decoded trend CSV."""
+    path = os.path.join(tmp, f"{base}_trend.csv")
+    spa_df.to_csv(path, index=False)
+    chans = sorted({c.split(":")[0] for c in spa_df.columns if ":" in c})
+    rows = []
+    for ch in chans:
+        for min_sqi in (None, 50, 90.5):
+            r = summarize(path, ch, min_sqi)
+            rows.append({"channel": ch, "minSqi": min_sqi, "row": {
+                k: (_ms(v) if isinstance(v, pd.Timestamp) or v is pd.NaT
+                    else v if isinstance(v, str) else _num(v)) for k, v in r.items()}})
+    os.remove(path)
+    return rows
+
+
 def golden(dh, base):
     p = lambda ext: os.path.join(dh, f"{base}.{ext}")
     g = {"base": base, "dir": dh}
-    g["spa"] = table(D.parse_spa(p("spa")))
+    spa_df = D.parse_spa(p("spa"))
+    g["spa"] = table(spa_df)
+    g["cohort"] = cohort_rows(spa_df, base, os.path.dirname(dh))
     if os.path.exists(p("f_a")):
         g["spectra"] = table(D.parse_spectra(p("f_a")))
     if os.path.exists(p("e_a")):
@@ -177,12 +196,38 @@ def header_only(root):
     return dh, "L01010000"
 
 
+def cohort_case(root, name, n, seed):
+    """.spa only, random values: sentinels, SR zeros, low SQI, blank SQI."""
+    import random
+    rnd = random.Random(seed)
+    dh = os.path.join(root, name, "DH03030900")
+    os.makedirs(dh)
+    params = ["SR12", "DB13U01", "EMGLOW01", "SQI10"]
+    ch = ["S_HDR3"] + ["Ch 1"] + [""] * 3 + ["Ch 2"] + [""] * 3 + [""]
+    nm = ["Time"] + params * 2 + [""]
+    lines = ["|".join(ch), "|".join(nm)]
+    for i in range(n):
+        t = 9 * 3600 + i
+        row = [f"03/03/2031 {t // 3600:02d}:{t % 3600 // 60:02d}:{t % 60:02d}"]
+        for _ in range(2):
+            gone = rnd.random() < 0.08
+            row += ["-3276.8" if gone else f"{max(0, rnd.gauss(2, 8)):.1f}",
+                    "-3276.0" if gone else f"{rnd.uniform(10, 85):.{rnd.choice([1, 1, 2])}f}",
+                    "-3276.0" if gone else f"{rnd.uniform(20, 55):.1f}",
+                    "" if rnd.random() < 0.05 else ("-327.7" if gone else f"{rnd.uniform(20, 100):.1f}")]
+        lines.append("|".join(row + [""]))
+    _w(os.path.join(dh, "L03030900.spa"), lines)
+    return dh, "L03030900"
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("outdir")
     a = ap.parse_args(argv)
     os.makedirs(a.outdir, exist_ok=True)
-    cases = [synth(a.outdir), edge(a.outdir), header_only(a.outdir)]
+    cases = [synth(a.outdir), edge(a.outdir), header_only(a.outdir),
+             cohort_case(a.outdir, "cohort-7", 7, 1), cohort_case(a.outdir, "cohort-300", 300, 2),
+             cohort_case(a.outdir, "cohort-20000", 20000, 3)]
     out = []
     for dh, base in cases:
         g = golden(dh, base)
