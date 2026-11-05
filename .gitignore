@@ -6,3 +6,9 @@ __pycache__/
 .pytest_cache/
 .venv/
 .DS_Store
+ts/node_modules/
+ts/dist/
+rust/target/
+rust/pkg-node/
+rust/pkg-web/
+bench/dist/

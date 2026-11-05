@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>bisdecode — TS vs Rust/WASM benchmark</title>
+<style>
+  :root { color-scheme: light dark; --fg:#1b1b1f; --bg:#fafaf7; --mute:#6b6b74; --line:#d9d9d2; --acc:#0a6b5a; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#ececf0; --bg:#141417; --mute:#9a9aa5; --line:#2e2e35; --acc:#4fd1b5; } }
+  body { font: 15px/1.5 system-ui, sans-serif; color: var(--fg); background: var(--bg); max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.3rem; margin: 0 0 .25rem; } p { color: var(--mute); margin: .25rem 0 1rem; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; margin-top: 1rem; }
+  th, td { text-align: right; padding: .35rem .6rem; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  tfoot td { font-weight: 600; } .win { color: var(--acc); font-weight: 600; }
+  label { display: inline-block; padding: .5rem .9rem; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+  #status { margin-top: .75rem; color: var(--mute); }
+</style>
+</head>
+<body>
+<h1>bisdecode in the browser: TypeScript vs Rust/WASM</h1>
+<p>Pick a <code>DH…</code> folder. The files are read in this tab only; nothing is uploaded.
+Each parser runs 3 warm-up + 15 timed passes; the table shows the median.</p>
+<label>Choose DH folder <input id="pick" type="file" webkitdirectory hidden></label>
+<div id="status"></div>
+<div id="out"></div>
+<script type="module" src="./bench.js"></script>
+</body>
+</html>
