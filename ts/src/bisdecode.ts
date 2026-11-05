@@ -41,6 +41,7 @@ export function decodeText(bytes: Uint8Array): string {
 }
 
 // Python str.splitlines() boundaries.
+// eslint-disable-next-line no-control-regex -- Python line breaks include control chars
 const LINE_BREAK = /\r\n|[\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029]/;
 
 export function splitlines(s: string): string[] {

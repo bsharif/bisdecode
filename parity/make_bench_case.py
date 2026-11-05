@@ -1,4 +1,4 @@
-"""Write a synthetic case the size of a real one (~2.3 h): .spa ~4 MB with
+"""Write a synthetic case the size of a real one (~2.3 h): .spa ~2.3 MB with
 three channel blocks, .f_a ~2.6 MB, .r2a ~4.2 MB. No clinical data.
 
     python parity/make_bench_case.py OUTDIR
